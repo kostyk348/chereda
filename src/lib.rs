@@ -379,13 +379,20 @@ impl Loop {
         if let Some(evidence) = &self.evidence {
             out.push_str(&format!(
                 "proof={}|{}|{}|{}|{}\n",
-                evidence.cmd, evidence.dir, evidence.expect, evidence.digest, evidence.at
+                esc(&evidence.cmd),
+                esc(&evidence.dir),
+                evidence.expect,
+                evidence.digest,
+                evidence.at
             ));
         }
         for act in &self.history {
             out.push_str(&format!(
                 "act={}|{}|{}|{}\n",
-                act.at, act.who, act.what, act.note
+                act.at,
+                esc(&act.who),
+                esc(&act.what),
+                esc(&act.note)
             ));
         }
         out
@@ -420,11 +427,11 @@ impl Loop {
                 "level" => level = value.trim().parse().unwrap_or(1),
                 "objection" => objection = value.trim().to_string(),
                 "proof" => {
-                    let parts: Vec<&str> = value.split('|').collect();
+                    let parts = split_escaped(value.trim());
                     if parts.len() >= 5 {
                         evidence = Some(Evidence {
-                            cmd: parts[0].to_string(),
-                            dir: parts[1].to_string(),
+                            cmd: unesc(&parts[0]),
+                            dir: unesc(&parts[1]),
                             expect: parts[2].parse().unwrap_or(0),
                             digest: parts[3].to_string(),
                             at: parts[4].parse().unwrap_or(0),
@@ -433,13 +440,17 @@ impl Loop {
                     }
                 }
                 "act" => {
-                    let parts: Vec<&str> = value.split('|').collect();
+                    let parts = split_escaped(value.trim());
                     if parts.len() >= 4 {
                         history.push(Act {
                             at: parts[0].parse().unwrap_or(0),
-                            who: parts[1].to_string(),
-                            what: parts[2].to_string(),
-                            note: parts[3..].join("|"),
+                            who: unesc(&parts[1]),
+                            what: unesc(&parts[2]),
+                            note: parts[3..]
+                                .iter()
+                                .map(|part| unesc(part))
+                                .collect::<Vec<_>>()
+                                .join("|"),
                         });
                     }
                 }
@@ -571,6 +582,56 @@ pub fn run_evidence(cmd: &str, dir: &str) -> Result<(i32, String, String), Strin
         digest(&normalized),
         excerpt,
     ))
+}
+
+/// Экранирование для плоского формата: команды и причины могут содержать `|`.
+fn esc(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\n', "\\n")
+}
+
+fn unesc(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('|') => out.push('|'),
+            Some('\\') => out.push('\\'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// Разбить по `|`, не разбивая по экранированным.
+fn split_escaped(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                current.push('\\');
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '|' => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            other => current.push(other),
+        }
+    }
+    parts.push(current);
+    parts
 }
 
 pub fn now() -> u64 {
@@ -918,6 +979,35 @@ mod tests {
         assert_eq!(back.history.len(), 3);
         assert_eq!(back.evidence.as_ref().unwrap().cmd, "cargo test");
         assert_eq!(back.whose_move(), Some(Side::Customer));
+    }
+
+    #[test]
+    fn evidence_command_with_a_pipe_survives_the_flat_format() {
+        let (code, dg, _) = run_evidence("printf 'a\\nb\\n' | tail -1", "").unwrap();
+        let mut loop_ = asked(1);
+        loop_.promise("forgessa", None, 1001).unwrap();
+        loop_
+            .declare(
+                "forgessa",
+                Evidence {
+                    cmd: "printf 'a\\nb\\n' | tail -1".to_string(),
+                    dir: "/tmp".to_string(),
+                    expect: code,
+                    digest: dg.clone(),
+                    at: 1002,
+                    excerpt: String::new(),
+                },
+                1002,
+            )
+            .unwrap();
+        let back = Loop::parse(&loop_.render()).unwrap();
+        let evidence = back.evidence.expect("доказательство сохранилось");
+        assert_eq!(
+            evidence.cmd, "printf 'a\\nb\\n' | tail -1",
+            "пайп не съеден разделителем"
+        );
+        assert_eq!(evidence.dir, "/tmp");
+        assert_eq!(evidence.digest, dg);
     }
 
     #[test]

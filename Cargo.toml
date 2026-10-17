@@ -1,0 +1,13 @@
+[package]
+name = "chereda"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Череда: формат работы, где единица — петля обязательства, а ось — чей ход"
+license = "MIT"
+
+[dependencies]
+
+[[bin]]
+name = "chereda"
+path = "src/main.rs"

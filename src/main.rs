@@ -420,7 +420,7 @@ fn cmd_verify(args: &[String]) -> i32 {
         return 0;
     }
     for (id, reason) in &broken {
-        println!("#{id}: приёмка отменена — {reason}");
+        println!("#{id}: {reason}");
     }
     println!("\nреальность открыла {} петель снова", broken.len());
     1

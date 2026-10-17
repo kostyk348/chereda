@@ -293,17 +293,22 @@ impl Loop {
 
     /// Реальность отменяет приёмку: доказательство перестало воспроизводиться.
     pub fn reopen(&mut self, reason: &str, at: u64) -> Result<(), String> {
-        if self.state.closed() {
-            self.act(at, "реальность", "открыто снова", reason);
-            self.state = State::Objection;
-            self.objection = reason.to_string();
-            self.deadline = at + clock_for(State::Objection, self.class);
-            return Ok(());
+        match self.state {
+            // Принятое может быть отменено реальностью; объявленное — тем более:
+            // объявление с невоспроизводимым доказательством недействительно.
+            State::Accepted | State::Declared => {
+                self.act(at, "реальность", "открыто снова", reason);
+                self.state = State::Objection;
+                self.objection = reason.to_string();
+                self.deadline = at + clock_for(State::Objection, self.class);
+                Ok(())
+            }
+            other => Err(format!(
+                "петля #{} в состоянии «{}» — переоткрывать нечего",
+                self.id,
+                other.as_str()
+            )),
         }
-        Err(format!(
-            "петля #{:?} не закрыта, переоткрывать нечего",
-            self.id
-        ))
     }
 
     fn expect(&self, side: Side, who: &str) -> Result<(), String> {
@@ -761,7 +766,12 @@ impl Ledger {
             };
             if code != evidence.expect {
                 let reason = format!(
-                    "доказательство не воспроизвелось: код {code} вместо {} ({})",
+                    "{} не подтвердилось: код {code} вместо {} ({})",
+                    if loop_.state == State::Accepted {
+                        "приёмка"
+                    } else {
+                        "объявление"
+                    },
                     evidence.expect,
                     excerpt.lines().next().unwrap_or("")
                 );
@@ -979,6 +989,45 @@ mod tests {
         assert_eq!(back.history.len(), 3);
         assert_eq!(back.evidence.as_ref().unwrap().cmd, "cargo test");
         assert_eq!(back.whose_move(), Some(Side::Customer));
+    }
+
+    #[test]
+    fn broken_declaration_can_be_revoked_before_acceptance() {
+        let (ledger, dir) = ledger("decl");
+        let marker = dir.join("gone.txt");
+        fs::write(&marker, "ok").unwrap();
+        let cmd = format!("test -f {}", marker.display());
+        let (code, dg, _) = run_evidence(&cmd, "").unwrap();
+        let mut loop_ = asked(1);
+        loop_.promise("forgessa", None, 1001).unwrap();
+        loop_
+            .declare(
+                "forgessa",
+                Evidence {
+                    cmd,
+                    dir: String::new(),
+                    expect: code,
+                    digest: dg,
+                    at: 1002,
+                    excerpt: String::new(),
+                },
+                1002,
+            )
+            .unwrap();
+        ledger.put(&loop_).unwrap();
+        assert_eq!(loop_.whose_move(), Some(Side::Customer));
+        fs::remove_file(&marker).unwrap();
+        let broken = ledger.verify(1003);
+        assert_eq!(broken.len(), 1);
+        let back = ledger.get(1).unwrap();
+        assert_eq!(back.state, State::Objection, "объявление отменено");
+        assert_eq!(back.whose_move(), Some(Side::Performer));
+        assert!(
+            back.objection.contains("объявление не подтвердилось"),
+            "{}",
+            back.objection
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
